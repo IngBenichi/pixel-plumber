@@ -223,7 +223,7 @@
       <div class="level-grid">
         <button class="play lvl" data-level="0">EASY<span class="lvl-sub">wide paths, generous coins</span></button>
         <button class="play lvl" data-level="1">MEDIUM<span class="lvl-sub">pits, pipes &amp; patrols</span></button>
-        <button class="play lvl lvl-impossible" data-level="2">IMPOSSIBLE<span class="lvl-sub">nobody has ever finished this</span></button>
+        <button class="play lvl lvl-impossible" data-level="2">IMPOSSIBLE<span class="lvl-sub">no clear is on record&hellip; or is it?</span></button>
       </div>
     </div>
 
@@ -289,6 +289,7 @@
   function sfxStomp(){ beep(180,0.14,'sawtooth',0.16); }
   function sfxHit(){ beep(160,0.25,'sawtooth',0.18); beep(100,0.3,'sawtooth',0.14,0.1); }
   function sfxClear(){ [523,659,784,1047].forEach(function(f,i){ beep(f,0.16,'square',0.14,i*0.12); }); }
+  function sfxSecret(){ [392,523,659,880,1175].forEach(function(f,i){ beep(f,0.22,'triangle',0.13,i*0.1); }); }
   function sfxOver(){ [392,330,294,220].forEach(function(f,i){ beep(f,0.22,'sawtooth',0.15,i*0.16); }); }
 
   // ---------- level ----------
@@ -368,7 +369,7 @@
       coinDefs: [[100,380],[132,380],[164,380]],
       enemyDefs: [{x:200,minX:150,maxX:250}],
       flagX:1700, flagTop:256, castleX:1772,
-      timeLimit:60, theme:'danger'
+      timeLimit:90, theme:'danger'
     }
   ];
 
@@ -410,6 +411,11 @@
   var jumpsUsed = 0, wantJumpPrev = false, doubleJumpT = 0;
   var AIR_JUMP_V = JUMP_V * 0.86;
 
+  // ---------- the impossible level's hidden crossing ----------
+  var coinsThisLife = 0, enemySpared = true, stillTimer = 0, blinksWhileStill = 0, prevBlinking = false, bridgeUnlocked = false;
+  var BLINK_PERIOD = 2600, BLINK_DURATION = 280;
+  var GAP_LO = 288, GAP_HI = 1216;
+
   function resetRun(){
     score = 0; coinCount = 0; lives = 3; timeAcc = 0;
     loadLevel(levelIndex);
@@ -424,6 +430,7 @@
     timeLeft = TIME_LIMIT;
     particles = []; shakeTime = 0; shakeMag = 0; prevGrounded = false; runDustTimer = 0; squashT = 0;
     jumpsUsed = 0; wantJumpPrev = false; doubleJumpT = 0;
+    coinsThisLife = 0; enemySpared = true; stillTimer = 0; blinksWhileStill = 0; prevBlinking = false; bridgeUnlocked = false;
   }
 
   // ---------- particles ----------
@@ -555,7 +562,7 @@
     pRect = {x:player.x,y:player.y,w:PLAYER_W,h:PLAYER_H};
     coins.forEach(function(c){
       if(!c.taken && rectsOverlap(pRect,c)){
-        c.taken = true; coinCount++; score += 10; sfxCoin();
+        c.taken = true; coinCount++; coinsThisLife++; score += 10; sfxCoin();
         spawnParticles('sparkle', c.x+c.w/2, c.y+c.h/2, 6);
       }
     });
@@ -586,11 +593,37 @@
           sfxStomp();
           spawnParticles('poof', eRect.x+eRect.w/2, eRect.y+eRect.h/2, 8, {color:'#C77B3D'});
           shake(2.5,90);
+          enemySpared = false;
         } else if(invuln <= 0){
           loseLife();
         }
       }
     });
+
+    // the impossible level's hidden crossing: spare the Wobble, gather every
+    // coin, then stand motionless through two full pulses of the sun
+    if(LEVELS[levelIndex].id === 'impossible' && !bridgeUnlocked){
+      var standingStill = player.grounded && Math.abs(player.vx) < 0.05 && !moveLeft && !moveRight;
+      if(standingStill){
+        stillTimer += dt;
+        var blinkPhase = animT % BLINK_PERIOD;
+        var isBlinking = blinkPhase < BLINK_DURATION;
+        if(isBlinking && !prevBlinking && stillTimer > 60){ blinksWhileStill++; }
+        prevBlinking = isBlinking;
+      } else {
+        stillTimer = 0;
+        blinksWhileStill = 0;
+        prevBlinking = false;
+      }
+      if(blinksWhileStill >= 2 && enemySpared && coinsThisLife >= 3){
+        bridgeUnlocked = true;
+        solids.push({x:GAP_LO, y:GROUND_TOP, w:GAP_HI-GAP_LO, h:64, type:'bridge'});
+        spawnParticles('confetti', (GAP_LO+GAP_HI)/2, GROUND_TOP-60, 40);
+        spawnParticles('sparkle', (GAP_LO+GAP_HI)/2, GROUND_TOP-20, 20);
+        shake(3,200);
+        sfxSecret();
+      }
+    }
 
     // camera
     var half = canvas.width/2;
@@ -734,6 +767,12 @@
     // ground
     groundSegs.forEach(function(seg){ drawGround(seg[0],seg[1]); });
 
+    // the impossible level's hidden bridge + riddle sign
+    if(THEME==='danger'){
+      if(bridgeUnlocked) drawBridge(GAP_LO,GAP_HI);
+      drawSign(112,GROUND_TOP);
+    }
+
     // platforms
     platforms.forEach(function(p){ brick(p.x,p.y,p.w,p.h); });
 
@@ -762,6 +801,10 @@
     // player
     if(invuln<=0 || Math.floor(animT/100)%2===0){
       drawPlayer(player.x, player.y, PLAYER_W, PLAYER_H, facing, !player.grounded, Math.abs(player.vx)>0.3, player.vy, doubleJumpT);
+    }
+
+    if(THEME==='danger' && !bridgeUnlocked && stillTimer>60){
+      drawRiddleProgress(player.x+PLAYER_W/2, player.y-14, blinksWhileStill);
     }
 
     drawParticlesFx();
@@ -1001,6 +1044,52 @@
     ctx.fill();
     ctx.restore();
     ctx.globalAlpha = 1;
+  }
+  function drawSign(x,groundY){
+    var postH = 78, plankW = 96, plankH = 78;
+    ctx.fillStyle = '#5A3A1E';
+    ctx.fillRect(x+plankW/2-3,groundY-postH,6,postH);
+    ctx.fillStyle = '#8B5A2B';
+    ctx.fillRect(x,groundY-postH-plankH+18,plankW,plankH);
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x,groundY-postH-plankH+18,plankW,plankH);
+    ctx.fillStyle = '#FFF8EC';
+    ctx.font = "9px 'Nunito', sans-serif";
+    ctx.textAlign = 'center';
+    var lines = ['Solo cruza','quien no hiere.','Reune el oro.','Luego, quedate','quieto y observa','el sol parpadear','dos veces.'];
+    var top = groundY-postH-plankH+18+13;
+    lines.forEach(function(line,i){
+      ctx.fillText(line, x+plankW/2, top+i*9.5);
+    });
+    ctx.textAlign = 'left';
+  }
+  function drawBridge(x0,x1){
+    var pulse = (Math.sin(animT/260)+1)/2;
+    var g = ctx.createLinearGradient(0,GROUND_TOP,0,GROUND_TOP+16);
+    g.addColorStop(0,'#FFE9A6');
+    g.addColorStop(1,'#D9A431');
+    ctx.fillStyle = g;
+    ctx.fillRect(x0,GROUND_TOP,x1-x0,16);
+    ctx.strokeStyle = 'rgba(120,70,0,0.5)';
+    ctx.lineWidth = 2;
+    for(var bx=x0; bx<x1; bx+=28){ ctx.strokeRect(bx,GROUND_TOP,28,16); }
+    ctx.fillStyle = 'rgba(255,240,180,'+(0.25+pulse*0.25)+')';
+    ctx.fillRect(x0,GROUND_TOP-6,x1-x0,6);
+    ctx.fillStyle = 'rgba(120,70,0,0.9)';
+    ctx.fillRect(x0,GROUND_TOP+16,x1-x0,48);
+  }
+  function drawRiddleProgress(cx,cy,count){
+    for(var i=0;i<2;i++){
+      var dx = cx + (i-0.5)*14;
+      ctx.beginPath();
+      ctx.arc(dx,cy,4,0,Math.PI*2);
+      ctx.fillStyle = i<count ? '#FFC93C' : 'rgba(255,255,255,0.35)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
   function drawFlagpole(x,topY,groundY){
     var g = ctx.createLinearGradient(x,0,x+5,0);
