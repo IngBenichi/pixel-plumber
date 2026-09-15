@@ -203,7 +203,7 @@
 <div class="cab">
   <div class="title-row">
     <h1>PIXEL PLUMBER</h1>
-    <span class="tagline" id="tagline">an original pipes-&amp;-coins platformer</span>
+    <span class="tagline" id="tagline">an original pipes-&amp;-coins platformer &mdash; now in 3D</span>
   </div>
 
   <div class="stage" id="stage">
@@ -256,15 +256,15 @@
     </div>
   </div>
 
-  <footer>An original homage platformer &mdash; procedurally drawn, no borrowed art or music.</footer>
+  <footer>An original homage platformer &mdash; procedurally built in 3D (Three.js), no borrowed art or music.</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
 <script>
 (function(){
   "use strict";
 
   var canvas = document.getElementById('game');
-  var ctx = canvas.getContext('2d');
   var TILE = 32;
 
   // ---------- audio (all synthesized, no samples) ----------
@@ -298,7 +298,8 @@
   // The IMPOSSIBLE level's pit is 928px wide. The best possible jump this engine
   // allows (dead run + perfectly-timed double jump) covers ~297px — see the
   // physics constants below. The gap is roughly 3x that, so no sequence of
-  // inputs can cross it: it is not "very hard", it is provably uncrossable.
+  // inputs can cross it: it is not "very hard", it is provably uncrossable
+  // without the hidden bridge.
   var LEVELS = [
     {
       id:'easy', name:'EASY',
@@ -398,13 +399,15 @@
 
     var tag = document.getElementById('tagline');
     if(tag) tag.textContent = 'Level: ' + L.name;
+
+    rebuildLevelMeshes();
   }
 
   // ---------- entities ----------
   var PLAYER_W = 26, PLAYER_H = 40;
   var GRAVITY = 0.72, JUMP_V = -13.6, MOVE_ACCEL = 0.62, MAX_SPEED = 4.3, FRICTION = 0.82, MAX_FALL = 15;
 
-  var player, camera, coins, enemies, keys, touch, state, score, coinCount, lives, timeLeft, timeAcc, invuln, facing, animT, poleSlide, started;
+  var player, coins, enemies, keys, touch, state, score, coinCount, lives, timeLeft, timeAcc, invuln, facing, animT;
   var particles = [];
   var shakeTime = 0, shakeMag = 0;
   var prevGrounded = false, runDustTimer = 0, squashT = 0;
@@ -423,17 +426,18 @@
   }
   function resetLevel(){
     player = {x:64,y:GROUND_TOP-PLAYER_H,vx:0,vy:0,grounded:false};
-    camera = {x:0};
     coins = coinDefs.map(function(c){ return {x:c[0],y:c[1],w:18,h:18,taken:false}; });
     enemies = enemyDefs.map(function(e){ return {x:e.x,y:GROUND_TOP-28,w:28,h:28,minX:e.minX,maxX:e.maxX,dir:1,alive:true,squish:0}; });
-    invuln = 0; facing = 1; animT = 0; poleSlide = 0;
+    invuln = 0; facing = 1; animT = 0;
     timeLeft = TIME_LIMIT;
     particles = []; shakeTime = 0; shakeMag = 0; prevGrounded = false; runDustTimer = 0; squashT = 0;
     jumpsUsed = 0; wantJumpPrev = false; doubleJumpT = 0;
     coinsThisLife = 0; enemySpared = true; stillTimer = 0; blinksWhileStill = 0; prevBlinking = false; bridgeUnlocked = false;
+
+    rebuildEntityMeshes();
   }
 
-  // ---------- particles ----------
+  // ---------- particles (simulation only — rendered by syncParticles) ----------
   function spawnParticles(type,x,y,n,opts){
     opts = opts || {};
     for(var i=0;i<n;i++){
@@ -625,10 +629,6 @@
       }
     }
 
-    // camera
-    var half = canvas.width/2;
-    camera.x = Math.max(0, Math.min(LEVEL_W - canvas.width, player.x - half));
-
     // flag
     if(player.x + PLAYER_W >= FLAG_X){
       winLevel();
@@ -694,564 +694,534 @@
     });
   }
 
-  // ---------- drawing ----------
   function seeded(n){ var x = Math.sin(n*127.1)*43758.5453; return x-Math.floor(x); }
 
-  function draw(){
-    var w = canvas.width, h = canvas.height;
-    var camX = camera.x;
+  // =====================================================================
+  // ---------- 3D rendering (Three.js) — third-person follow camera ----
+  // =====================================================================
+  var SCALE = 1/32;
+  function wx(px){ return px*SCALE; }
+  function wyTop(y,h){ return SCALE*(GROUND_TOP - y - h/2); }
+  function wyPoint(y){ return SCALE*(GROUND_TOP - y); }
 
-    var shx = 0, shy = 0;
-    if(shakeTime>0){
-      shx = (seeded(animT*0.7)-0.5)*2*shakeMag;
-      shy = (seeded(animT*0.7+9)-0.5)*2*shakeMag;
-    } else { shakeMag = 0; }
+  var renderer, scene, tcamera, dirLight;
+  var levelGroup = null;
+  var bridgeMesh = null, bridgePopT = 0;
+  var flagRef = null, castleRef = null;
+  var playerRig, legL, legR, armL, armR;
+  var enemyMeshes = [], coinMeshes = [];
+  var riddleDots = [];
+  var camState = {x:0,y:1.6,z:6.4};
+  var particlePools = { dust:[], poof:[], sparkle:[], confetti:[] };
+  var particleGeos = {};
 
-    // sky
-    var sky = ctx.createLinearGradient(0,0,0,h);
-    if(THEME==='danger'){
-      sky.addColorStop(0,'#7A1E1E');
-      sky.addColorStop(0.55,'#B0413A');
-      sky.addColorStop(1,'#F2C6B4');
-    } else {
-      sky.addColorStop(0,'#3E8ED0');
-      sky.addColorStop(0.55,'#7EC8F5');
-      sky.addColorStop(1,'#E9F7FF');
-    }
-    ctx.fillStyle = sky;
-    ctx.fillRect(0,0,w,h);
-
-    ctx.save();
-    ctx.translate(shx,shy);
-
-    // sun glow (far parallax, almost static)
-    var sunX = w*0.78 - camX*0.02, sunY = 92;
-    for(var s=3;s>=0;s--){
-      var rad = 70 - s*14;
-      var glow = ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,rad);
-      glow.addColorStop(0,'rgba(255,247,214,'+(0.5-s*0.08)+')');
-      glow.addColorStop(1,'rgba(255,247,214,0)');
-      ctx.fillStyle = glow;
-      ctx.beginPath(); ctx.arc(sunX,sunY,rad,0,Math.PI*2); ctx.fill();
-    }
-    ctx.fillStyle = '#FFF7D6';
-    ctx.beginPath(); ctx.arc(sunX,sunY,30,0,Math.PI*2); ctx.fill();
-
-    // back mountains (distant, cool tint)
-    ctx.fillStyle = '#9FB0D8';
-    for(var m=0;m<6;m++){
-      var mx = ((m*300) - camX*0.12) % (w+320);
-      if(mx < -260) mx += (w+320);
-      mountain(mx, GROUND_TOP+30, 180, 120);
-    }
-
-    // clouds
-    for(var i=0;i<7;i++){
-      var cx = ((i*430) - camX*0.28) % (w+300);
-      if(cx < -200) cx += (w+300);
-      cloud(cx, 58 + (i%3)*24);
-    }
-
-    // front hills (green, textured)
-    for(var j=0;j<9;j++){
-      var hx = ((j*380) - camX*0.5) % (w+420);
-      if(hx < -280) hx += (w+420);
-      hill(hx, GROUND_TOP+14, 230);
-    }
-
-    ctx.translate(-camX,0);
-
-    // castle backdrop near the flag
-    drawCastle(CASTLE_X, GROUND_TOP);
-
-    // ground
-    groundSegs.forEach(function(seg){ drawGround(seg[0],seg[1]); });
-
-    // the impossible level's hidden bridge + riddle sign
-    if(THEME==='danger'){
-      if(bridgeUnlocked) drawBridge(GAP_LO,GAP_HI);
-      drawSign(112,GROUND_TOP);
-    }
-
-    // platforms
-    platforms.forEach(function(p){ brick(p.x,p.y,p.w,p.h); });
-
-    // pipes
-    pipes.forEach(function(p){ pipe(p.x,p.y,p.w,p.h); });
-
-    // coins
-    coins.forEach(function(c){
-      if(c.taken) return;
-      var bob = Math.sin((animT/180) + c.x) * 3;
-      var spin = Math.sin(animT/220 + c.x);
-      drawCoin(c.x+c.w/2, c.y+c.h/2+bob, 9, spin);
-    });
-
-    drawParticlesDust();
-
-    // enemies
-    enemies.forEach(function(e){
-      if(e.alive) drawGoomba(e.x,e.y,e.w,e.h,e.dir);
-      else if(e.squish>0) drawGoombaSquish(e.x,e.y,e.w,e.h,e.squish);
-    });
-
-    // flag pole
-    drawFlagpole(FLAG_X, FLAG_TOP, GROUND_TOP);
-
-    // player
-    if(invuln<=0 || Math.floor(animT/100)%2===0){
-      drawPlayer(player.x, player.y, PLAYER_W, PLAYER_H, facing, !player.grounded, Math.abs(player.vx)>0.3, player.vy, doubleJumpT);
-    }
-
-    if(THEME==='danger' && !bridgeUnlocked && stillTimer>60){
-      drawRiddleProgress(player.x+PLAYER_W/2, player.y-14, blinksWhileStill);
-    }
-
-    drawParticlesFx();
-
-    ctx.restore();
-  }
-
-  function drawParticlesDust(){
-    particles.forEach(function(p){ if(p.type==='dust') drawOneParticle(p); });
-  }
-  function drawParticlesFx(){
-    particles.forEach(function(p){ if(p.type!=='dust') drawOneParticle(p); });
-  }
-  function drawOneParticle(p){
-    var t = p.life/p.max;
-    var alpha = 1-t;
-    ctx.globalAlpha = Math.max(0,alpha);
-    if(p.type==='confetti'){
-      ctx.save();
-      ctx.translate(p.x,p.y);
-      ctx.rotate(p.rot);
-      ctx.fillStyle = p.color;
-      ctx.fillRect(-p.size/2,-p.size/3,p.size,p.size*0.66);
-      ctx.restore();
-    } else if(p.type==='sparkle'){
-      ctx.fillStyle = p.color;
-      var s = p.size*(1-t*0.4);
-      ctx.beginPath();
-      ctx.moveTo(p.x,p.y-s*1.6); ctx.lineTo(p.x+s*0.4,p.y-s*0.2);
-      ctx.lineTo(p.x+s*1.6,p.y); ctx.lineTo(p.x+s*0.4,p.y+s*0.2);
-      ctx.lineTo(p.x,p.y+s*1.6); ctx.lineTo(p.x-s*0.4,p.y+s*0.2);
-      ctx.lineTo(p.x-s*1.6,p.y); ctx.lineTo(p.x-s*0.4,p.y-s*0.2);
-      ctx.closePath(); ctx.fill();
-    } else {
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x,p.y,p.size*(1-t*0.3),0,Math.PI*2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  function mountain(x,y,size,ht){
-    var grad = ctx.createLinearGradient(x,y-ht,x,y);
-    if(THEME==='danger'){ grad.addColorStop(0,'#6B3550'); grad.addColorStop(1,'#432038'); }
-    else { grad.addColorStop(0,'#B7C4E8'); grad.addColorStop(1,'#8FA0D0'); }
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(x-size*0.55,y);
-    ctx.lineTo(x-size*0.12,y-ht);
-    ctx.lineTo(x+size*0.1,y-ht*0.62);
-    ctx.lineTo(x+size*0.55,y);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.beginPath();
-    ctx.moveTo(x-size*0.12,y-ht);
-    ctx.lineTo(x-size*0.02,y-ht*0.86);
-    ctx.lineTo(x+size*0.06,y-ht*0.7);
-    ctx.lineTo(x-size*0.16,y-ht*0.74);
-    ctx.closePath();
-    ctx.fill();
-  }
-  function cloud(x,y){
-    ctx.fillStyle = THEME==='danger' ? 'rgba(90,50,60,0.35)' : 'rgba(160,190,215,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(x+3,y+6,26,15,0,0,Math.PI*2);
-    ctx.ellipse(x+27,y+9,20,12,0,0,Math.PI*2);
-    ctx.fill();
-    var g = ctx.createLinearGradient(x,y-16,x,y+16);
-    if(THEME==='danger'){ g.addColorStop(0,'#D8BDBD'); g.addColorStop(1,'#9A7A7A'); }
-    else { g.addColorStop(0,'#FFFFFF'); g.addColorStop(1,'#DCEEFB'); }
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(x,y,26,16,0,0,Math.PI*2);
-    ctx.ellipse(x+24,y+4,20,13,0,0,Math.PI*2);
-    ctx.ellipse(x-22,y+5,18,12,0,0,Math.PI*2);
-    ctx.fill();
-  }
-  function hill(x,y,size){
-    var g = ctx.createLinearGradient(x,y-size*0.55,x,y);
-    if(THEME==='danger'){ g.addColorStop(0,'#8A4A3A'); g.addColorStop(1,'#5A2A1E'); }
-    else { g.addColorStop(0,'#5FBE6B'); g.addColorStop(1,'#3B8A49'); }
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(x-size*0.6,y);
-    ctx.quadraticCurveTo(x, y-size*0.55, x+size*0.6, y);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    ctx.beginPath();
-    ctx.moveTo(x-size*0.55,y-4);
-    ctx.quadraticCurveTo(x-size*0.1, y-size*0.5, x+size*0.05, y-size*0.3);
-    ctx.quadraticCurveTo(x-size*0.2,y-size*0.28, x-size*0.55,y-4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = THEME==='danger' ? 'rgba(70,25,20,0.35)' : 'rgba(30,70,30,0.35)';
-    for(var k=0;k<6;k++){
-      var tx = x - size*0.4 + k*size*0.15 + Math.sin(k*13)*6;
-      var ty = y - 3 - Math.abs(Math.sin((tx-x)/size*Math.PI))*size*0.18;
-      ctx.beginPath();
-      ctx.moveTo(tx,ty); ctx.lineTo(tx-3,ty+7); ctx.lineTo(tx+3,ty+7);
-      ctx.closePath(); ctx.fill();
-    }
-  }
-  function drawGround(x0,x1){
-    var g = ctx.createLinearGradient(0,GROUND_TOP,0,GROUND_TOP+64);
-    g.addColorStop(0,'#9C6B3E');
-    g.addColorStop(0.18,'#8B5A2B');
-    g.addColorStop(1,'#5A3A1E');
-    ctx.fillStyle = g;
-    ctx.fillRect(x0, GROUND_TOP, x1-x0, 64);
-    ctx.strokeStyle = 'rgba(0,0,0,0.16)';
-    ctx.lineWidth = 1;
-    for(var gx=x0; gx<x1; gx+=TILE){
-      for(var gy=GROUND_TOP+10; gy<GROUND_TOP+64; gy+=16){
-        var off = ((gy/16)%2===0)?0:TILE/2;
-        ctx.strokeRect(gx+off, gy, TILE, 16);
+  function disposeObj(o){
+    if(!o) return;
+    o.traverse(function(node){
+      if(node.geometry) node.geometry.dispose();
+      if(node.material){
+        var mats = Array.isArray(node.material) ? node.material : [node.material];
+        mats.forEach(function(m){ if(m.map) m.map.dispose(); m.dispose(); });
       }
-    }
-    var grass = ctx.createLinearGradient(0,GROUND_TOP-2,0,GROUND_TOP+12);
-    if(THEME==='danger'){ grass.addColorStop(0,'#B23A2E'); grass.addColorStop(1,'#5A1E14'); }
-    else { grass.addColorStop(0,'#6FD17C'); grass.addColorStop(1,'#3B8A49'); }
-    ctx.fillStyle = grass;
-    ctx.fillRect(x0, GROUND_TOP, x1-x0, 10);
-    ctx.fillStyle = THEME==='danger' ? '#3A140E' : '#2F6E3B';
-    for(var tx=x0; tx<x1; tx+=14){
-      var th = 4+seeded(tx)*5;
-      ctx.fillRect(tx, GROUND_TOP-th+4, 3, th);
-    }
-  }
-  function brick(x,y,w,h){
-    var g = ctx.createLinearGradient(x,y,x,y+h);
-    g.addColorStop(0,'#E0965A');
-    g.addColorStop(0.3,'#C77B3D');
-    g.addColorStop(1,'#9C5A26');
-    ctx.fillStyle = g;
-    ctx.fillRect(x,y,w,h);
-    ctx.strokeStyle = 'rgba(90,50,15,0.55)';
-    ctx.lineWidth = 2;
-    var rows = Math.max(1,Math.round(h/TILE));
-    for(var r=0;r<rows;r++){
-      var offset = (r%2===0)?0:TILE/2;
-      for(var bx=x-offset; bx<x+w; bx+=TILE){
-        ctx.strokeRect(bx,y+r*(h/rows),TILE,h/rows);
-      }
-    }
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
-    ctx.fillRect(x,y,w,3);
-    ctx.fillStyle = 'rgba(0,0,0,0.2)';
-    ctx.fillRect(x,y+h-3,w,3);
-  }
-  function pipe(x,y,w,h){
-    var g = ctx.createLinearGradient(x,0,x+w,0);
-    g.addColorStop(0,'#1F5F3B');
-    g.addColorStop(0.22,'#3AA76B');
-    g.addColorStop(0.45,'#5FD98C');
-    g.addColorStop(0.6,'#3AA76B');
-    g.addColorStop(1,'#1F5F3B');
-    ctx.fillStyle = g;
-    ctx.fillRect(x,y,w,h);
-    var gr = ctx.createLinearGradient(x-4,0,x+w+4,0);
-    gr.addColorStop(0,'#164A2D');
-    gr.addColorStop(0.25,'#2E8B57');
-    gr.addColorStop(0.5,'#4FCB86');
-    gr.addColorStop(0.75,'#2E8B57');
-    gr.addColorStop(1,'#164A2D');
-    ctx.fillStyle = gr;
-    ctx.fillRect(x-4,y,w+8,16);
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.fillRect(x+6,y+4,w-12,6);
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.fillRect(x-4,y+16,w+8,3);
-  }
-  function drawCoin(cx,cy,r,spin){
-    var squeeze = Math.max(0.18,Math.abs(spin));
-    ctx.save();
-    ctx.translate(cx,cy);
-    ctx.scale(squeeze,1);
-    var g = ctx.createRadialGradient(-r*0.3,-r*0.3,1,0,0,r);
-    g.addColorStop(0,'#FFF3B0');
-    g.addColorStop(0.5,'#FFC93C');
-    g.addColorStop(1,'#C98A00');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.ellipse(0,0,r*0.62,r,0,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.beginPath(); ctx.ellipse(-r*0.18,-r*0.4,r*0.16,r*0.3,0,0,Math.PI*2); ctx.fill();
-    ctx.restore();
-    var glow = ctx.createRadialGradient(cx,cy,0,cx,cy,r*2.2);
-    glow.addColorStop(0,'rgba(255,210,90,0.25)');
-    glow.addColorStop(1,'rgba(255,210,90,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(cx,cy,r*2.2,0,Math.PI*2); ctx.fill();
-  }
-  function drawGoomba(x,y,w,h,dir){
-    var bob = Math.sin(animT/110 + x)*1.5;
-    ctx.save();
-    ctx.translate(0,bob);
-    ctx.fillStyle = 'rgba(20,20,10,0.25)';
-    ctx.beginPath(); ctx.ellipse(x+w/2,y+h+4,w*0.45,4,0,0,Math.PI*2); ctx.fill();
-
-    var g = ctx.createRadialGradient(x+w*0.32,y+h*0.35,2,x+w/2,y+h*0.55,w*0.6);
-    g.addColorStop(0,'#B85632');
-    g.addColorStop(1,'#7A2E15');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(x+w/2,y+h*0.55,w/2,h*0.45,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = '#4A1E0C';
-    var stomp = Math.sin(animT/90+x)*2;
-    ctx.fillRect(x+3,y+h-9+Math.max(0,stomp),7,9);
-    ctx.fillRect(x+w-10,y+h-9-Math.max(0,stomp),7,9);
-    ctx.fillStyle = '#2E1A10';
-    ctx.beginPath(); ctx.ellipse(x+w*0.5,y+h*0.28,w*0.42,h*0.16,0,Math.PI,0,true); ctx.fill();
-    ctx.fillStyle = '#FFF8EC';
-    var ex = dir>0 ? x+w*0.5 : x+w*0.1;
-    ctx.beginPath(); ctx.ellipse(ex+5,y+h*0.42,4.5,5.5,0,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(ex+15,y+h*0.42,4.5,5.5,0,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#1C1C1E';
-    ctx.beginPath(); ctx.arc(ex+5+(dir>0?1.5:-1.5),y+h*0.44,2.3,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(ex+15+(dir>0?1.5:-1.5),y+h*0.44,2.3,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle = '#2E1208';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(ex,y+h*0.3); ctx.lineTo(ex+8,y+h*0.26); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(ex+12,y+h*0.26); ctx.lineTo(ex+20,y+h*0.3); ctx.stroke();
-    ctx.restore();
-  }
-  function drawGoombaSquish(x,y,w,h,t){
-    var k = t/220;
-    ctx.save();
-    ctx.globalAlpha = Math.min(1,k*2);
-    ctx.translate(x+w/2, y+h);
-    ctx.scale(1+ (1-k)*0.5, k*0.35);
-    ctx.fillStyle = '#7A2E15';
-    ctx.beginPath();
-    ctx.ellipse(0,0,w/2,h*0.45,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.restore();
-    ctx.globalAlpha = 1;
-  }
-  function drawSign(x,groundY){
-    var postH = 78, plankW = 96, plankH = 78;
-    ctx.fillStyle = '#5A3A1E';
-    ctx.fillRect(x+plankW/2-3,groundY-postH,6,postH);
-    ctx.fillStyle = '#8B5A2B';
-    ctx.fillRect(x,groundY-postH-plankH+18,plankW,plankH);
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x,groundY-postH-plankH+18,plankW,plankH);
-    ctx.fillStyle = '#FFF8EC';
-    ctx.font = "9px 'Nunito', sans-serif";
-    ctx.textAlign = 'center';
-    var lines = ['Solo cruza','quien no hiere.','Reune el oro.','Luego, quedate','quieto y observa','el sol parpadear','dos veces.'];
-    var top = groundY-postH-plankH+18+13;
-    lines.forEach(function(line,i){
-      ctx.fillText(line, x+plankW/2, top+i*9.5);
     });
-    ctx.textAlign = 'left';
+    if(o.parent) o.parent.remove(o);
   }
-  function drawBridge(x0,x1){
-    var pulse = (Math.sin(animT/260)+1)/2;
-    var g = ctx.createLinearGradient(0,GROUND_TOP,0,GROUND_TOP+16);
-    g.addColorStop(0,'#FFE9A6');
-    g.addColorStop(1,'#D9A431');
-    ctx.fillStyle = g;
-    ctx.fillRect(x0,GROUND_TOP,x1-x0,16);
-    ctx.strokeStyle = 'rgba(120,70,0,0.5)';
-    ctx.lineWidth = 2;
-    for(var bx=x0; bx<x1; bx+=28){ ctx.strokeRect(bx,GROUND_TOP,28,16); }
-    ctx.fillStyle = 'rgba(255,240,180,'+(0.25+pulse*0.25)+')';
-    ctx.fillRect(x0,GROUND_TOP-6,x1-x0,6);
-    ctx.fillStyle = 'rgba(120,70,0,0.9)';
-    ctx.fillRect(x0,GROUND_TOP+16,x1-x0,48);
+
+  function initThree(){
+    renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+    renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio||1));
+    renderer.setSize(canvas.width, canvas.height, false);
+    if('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    scene = new THREE.Scene();
+    tcamera = new THREE.PerspectiveCamera(55, canvas.width/canvas.height, 0.1, 300);
+    scene.add(tcamera);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a2a1e, 0.85));
+    dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    dirLight.position.set(-6,10,8);
+    scene.add(dirLight);
+    scene.add(new THREE.AmbientLight(0xffffff,0.28));
+
+    particleGeos.dust = new THREE.SphereGeometry(0.1,6,6);
+    particleGeos.poof = new THREE.SphereGeometry(0.12,6,6);
+    particleGeos.sparkle = new THREE.OctahedronGeometry(0.1,0);
+    particleGeos.confetti = new THREE.BoxGeometry(0.09,0.06,0.02);
+
+    buildSun();
+    buildPlayerRig();
+    buildRiddleDots();
   }
-  function drawRiddleProgress(cx,cy,count){
+
+  function buildSun(){
+    var c = document.createElement('canvas'); c.width=128; c.height=128;
+    var g = c.getContext('2d');
+    var grad = g.createRadialGradient(64,64,0,64,64,64);
+    grad.addColorStop(0,'rgba(255,247,214,1)');
+    grad.addColorStop(0.4,'rgba(255,247,214,0.5)');
+    grad.addColorStop(1,'rgba(255,247,214,0)');
+    g.fillStyle = grad; g.fillRect(0,0,128,128);
+    var tex = new THREE.CanvasTexture(c);
+    var mat = new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false});
+    var sprite = new THREE.Sprite(mat);
+    sprite.scale.set(16,16,1);
+    sprite.position.set(6,4,-45);
+    tcamera.add(sprite);
+  }
+
+  function buildRiddleDots(){
+    var c = document.createElement('canvas'); c.width=32; c.height=32;
+    var g = c.getContext('2d');
+    g.beginPath(); g.arc(16,16,13,0,Math.PI*2); g.fillStyle='#fff'; g.fill();
+    g.lineWidth=3; g.strokeStyle='rgba(0,0,0,0.5)'; g.stroke();
+    var tex = new THREE.CanvasTexture(c);
     for(var i=0;i<2;i++){
-      var dx = cx + (i-0.5)*14;
-      ctx.beginPath();
-      ctx.arc(dx,cy,4,0,Math.PI*2);
-      ctx.fillStyle = i<count ? '#FFC93C' : 'rgba(255,255,255,0.35)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      var mat = new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false});
+      var s = new THREE.Sprite(mat);
+      s.scale.set(0.22,0.22,1);
+      s.visible = false;
+      scene.add(s);
+      riddleDots.push(s);
     }
   }
-  function drawFlagpole(x,topY,groundY){
-    var g = ctx.createLinearGradient(x,0,x+5,0);
-    g.addColorStop(0,'#B9B9B9');
-    g.addColorStop(0.5,'#F2F2F2');
-    g.addColorStop(1,'#9A9A9A');
-    ctx.fillStyle = g;
-    ctx.fillRect(x, topY, 5, groundY-topY);
-    ctx.fillStyle = '#D6B24A';
-    ctx.beginPath(); ctx.arc(x+2, topY, 7, 0, Math.PI*2); ctx.fill();
 
-    var wave = Math.sin(animT/220)*6;
-    ctx.fillStyle = '#FFC93C';
-    ctx.beginPath();
-    ctx.moveTo(x+5, topY+8);
-    ctx.quadraticCurveTo(x+20+wave, topY+13, x+34, topY+17);
-    ctx.lineTo(x+30+wave*0.6, topY+24);
-    ctx.quadraticCurveTo(x+18, topY+21, x+5, topY+25);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = 'rgba(200,130,0,0.4)';
-    ctx.beginPath();
-    ctx.moveTo(x+5, topY+8);
-    ctx.lineTo(x+5, topY+25);
-    ctx.lineTo(x+11,topY+21);
-    ctx.lineTo(x+11,topY+11);
-    ctx.closePath();
-    ctx.fill();
+  function makeLimb(mat, w, len, d, shoeMat){
+    var g = new THREE.Object3D();
+    var box = new THREE.Mesh(new THREE.BoxGeometry(w,len,d), mat);
+    box.position.y = -len/2;
+    g.add(box);
+    if(shoeMat){
+      var shoe = new THREE.Mesh(new THREE.BoxGeometry(w*1.25,len*0.3,d*1.15), shoeMat);
+      shoe.position.y = -len;
+      g.add(shoe);
+    }
+    return g;
   }
-  function drawCastle(x,groundY){
-    var wallG = ctx.createLinearGradient(x,groundY-96,x,groundY);
-    wallG.addColorStop(0,'#CBB69C');
-    wallG.addColorStop(1,'#9A836A');
-    ctx.fillStyle = wallG;
-    ctx.fillRect(x, groundY-96, 120, 96);
-    ctx.fillStyle = '#7A6852';
-    for(var i=0;i<5;i++){ ctx.fillRect(x+i*24, groundY-112, 16, 16); }
-    ctx.fillStyle = '#7A6852';
-    ctx.fillRect(x+44, groundY-56, 32, 56);
-    ctx.fillStyle = '#3E332A';
-    ctx.beginPath();
-    ctx.ellipse(x+60, groundY-30, 14, 26, 0, Math.PI, 0, false);
-    ctx.fill();
-    var glow = (Math.sin(animT/500)+1)/2;
-    ctx.fillStyle = 'rgba(255,210,120,'+(0.55+glow*0.35)+')';
-    ctx.fillRect(x+14,groundY-72,12,12);
-    ctx.fillRect(x+94,groundY-72,12,12);
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x+14,groundY-72,12,12);
-    ctx.strokeRect(x+94,groundY-72,12,12);
+
+  function buildPlayerRig(){
+    playerRig = new THREE.Object3D();
+    scene.add(playerRig);
+
+    var PH = PLAYER_H*SCALE, PW = PLAYER_W*SCALE, PD = 0.52;
+    var overallsMat = new THREE.MeshStandardMaterial({color:0x1D6B6B});
+    var shirtMat = new THREE.MeshStandardMaterial({color:0xE4572E});
+    var skinMat = new THREE.MeshStandardMaterial({color:0xF2C29B});
+    var capMat = new THREE.MeshStandardMaterial({color:0xC74A22});
+    var darkMat = new THREE.MeshStandardMaterial({color:0x2E2A26});
+    var mustacheMat = new THREE.MeshStandardMaterial({color:0x3B2417});
+    var eyeMat = new THREE.MeshStandardMaterial({color:0x1C1C1E});
+
+    var hipY = PH*0.28, legLen = hipY;
+    legL = makeLimb(overallsMat, PW*0.26, legLen, PD*0.6, darkMat);
+    legL.position.set(-PW*0.18, hipY, 0);
+    playerRig.add(legL);
+    legR = makeLimb(overallsMat, PW*0.26, legLen, PD*0.6, darkMat);
+    legR.position.set(PW*0.18, hipY, 0);
+    playerRig.add(legR);
+
+    var torsoH = PH*0.38;
+    var torso = new THREE.Mesh(new THREE.BoxGeometry(PW*0.95,torsoH,PD), overallsMat);
+    torso.position.set(0, hipY+torsoH/2, 0);
+    playerRig.add(torso);
+    var buttonMat = skinMat;
+    [-1,1].forEach(function(s){
+      var btn = new THREE.Mesh(new THREE.SphereGeometry(PW*0.05,6,6), buttonMat);
+      btn.position.set(s*PW*0.2, hipY+torsoH*0.62, PD/2+0.01);
+      playerRig.add(btn);
+    });
+
+    var shirtH = PH*0.22;
+    var shirtY = hipY + torsoH*0.55;
+    var shirt = new THREE.Mesh(new THREE.BoxGeometry(PW*1.05,shirtH,PD*1.05), shirtMat);
+    shirt.position.set(0, shirtY+shirtH/2, 0);
+    playerRig.add(shirt);
+
+    var armLen = PH*0.3;
+    armL = makeLimb(shirtMat, PW*0.2, armLen, PD*0.5, null);
+    var handL = new THREE.Mesh(new THREE.SphereGeometry(PW*0.16,8,8), skinMat);
+    handL.position.y = -armLen;
+    armL.add(handL);
+    armL.position.set(-PW*0.55, shirtY+shirtH*0.7, 0);
+    playerRig.add(armL);
+
+    armR = makeLimb(shirtMat, PW*0.2, armLen, PD*0.5, null);
+    var handR = new THREE.Mesh(new THREE.SphereGeometry(PW*0.16,8,8), skinMat);
+    handR.position.y = -armLen;
+    armR.add(handR);
+    armR.position.set(PW*0.55, shirtY+shirtH*0.7, 0);
+    playerRig.add(armR);
+
+    var headH = PH*0.26;
+    var headY = shirtY+shirtH+headH/2+0.02;
+    var headGroup = new THREE.Object3D();
+    var headMesh = new THREE.Mesh(new THREE.BoxGeometry(PW*0.85,headH,PD*0.9), skinMat);
+    headGroup.add(headMesh);
+    var capMesh = new THREE.Mesh(new THREE.BoxGeometry(PW*0.92,headH*0.5,PD*0.96), capMat);
+    capMesh.position.y = headH*0.62;
+    headGroup.add(capMesh);
+    var brimMesh = new THREE.Mesh(new THREE.BoxGeometry(PW*0.32,headH*0.12,PD*0.42), capMat);
+    brimMesh.position.set(0, headH*0.42, PD*0.5);
+    headGroup.add(brimMesh);
+    var mustacheMesh = new THREE.Mesh(new THREE.BoxGeometry(PW*0.55,headH*0.14,PD*0.18), mustacheMat);
+    mustacheMesh.position.set(0, -headH*0.06, PD*0.46);
+    headGroup.add(mustacheMesh);
+    [-1,1].forEach(function(s){
+      var eye = new THREE.Mesh(new THREE.BoxGeometry(PW*0.13,PW*0.13,PD*0.12), eyeMat);
+      eye.position.set(s*PW*0.2, headH*0.2, PD*0.46);
+      headGroup.add(eye);
+    });
+    headGroup.position.set(0, headY, 0);
+    playerRig.add(headGroup);
   }
-  function drawPlayer(x,y,w,h,dir,jumping,running,vy,spinT){
-    var stretch = jumping ? Math.max(-0.18,Math.min(0.28,vy/22)) : 0;
+
+  function makeWobble(){
+    var g = new THREE.Object3D();
+    var bodyMat = new THREE.MeshStandardMaterial({color:0xB85632});
+    var footMat = new THREE.MeshStandardMaterial({color:0x4A1E0C});
+    var eyeMat = new THREE.MeshStandardMaterial({color:0xFFF8EC});
+    var pupilMat = new THREE.MeshStandardMaterial({color:0x1C1C1E});
+    var EW = 28*SCALE, EH = 28*SCALE, ED = 0.5;
+    var body = new THREE.Mesh(new THREE.SphereGeometry(EW*0.52,10,8), bodyMat);
+    body.scale.set(1,0.82,ED/EW);
+    body.position.y = EH*0.42;
+    g.add(body);
+    [-1,1].forEach(function(s){
+      var foot = new THREE.Mesh(new THREE.BoxGeometry(EW*0.28,EH*0.22,ED*0.55), footMat);
+      foot.position.set(s*EW*0.22, EH*0.11, 0);
+      g.add(foot);
+      var eye = new THREE.Mesh(new THREE.SphereGeometry(EW*0.14,8,8), eyeMat);
+      eye.position.set(s*EW*0.16, EH*0.5, EW*0.4);
+      g.add(eye);
+      var pupil = new THREE.Mesh(new THREE.SphereGeometry(EW*0.06,6,6), pupilMat);
+      pupil.position.set(s*EW*0.16, EH*0.5, EW*0.5);
+      g.add(pupil);
+    });
+    return g;
+  }
+
+  function makeCoinMesh(){
+    var group = new THREE.Object3D();
+    var mat = new THREE.MeshStandardMaterial({color:0xFFC93C, emissive:0x8a5a00, emissiveIntensity:0.35, metalness:0.4, roughness:0.3});
+    var disc = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.28,0.07,16), mat);
+    disc.rotation.x = Math.PI/2;
+    group.add(disc);
+    return group;
+  }
+
+  function makeCastle(x){
+    var g = new THREE.Object3D();
+    var wallMat = new THREE.MeshStandardMaterial({color:0xCBB69C});
+    var roofMat = new THREE.MeshStandardMaterial({color:0x7A6852});
+    var wall = new THREE.Mesh(new THREE.BoxGeometry(3.6,2.8,2.4), wallMat);
+    wall.position.set(wx(x)+1.8, 1.4, -2);
+    g.add(wall);
+    var tower = new THREE.Mesh(new THREE.BoxGeometry(1.0,3.4,1.0), wallMat);
+    tower.position.set(wx(x)+1.8, 1.7, -2);
+    g.add(tower);
+    var roof = new THREE.Mesh(new THREE.ConeGeometry(0.9,1.1,4), roofMat);
+    roof.position.set(wx(x)+1.8, 3.95, -2);
+    roof.rotation.y = Math.PI/4;
+    g.add(roof);
+    var winMat1 = new THREE.MeshStandardMaterial({color:0xFFD278, emissive:0xFFD278, emissiveIntensity:0.6});
+    var winMat2 = new THREE.MeshStandardMaterial({color:0xFFD278, emissive:0xFFD278, emissiveIntensity:0.6});
+    var win1 = new THREE.Mesh(new THREE.BoxGeometry(0.32,0.32,0.06), winMat1);
+    win1.position.set(wx(x)+0.7, 1.9, -0.79);
+    g.add(win1);
+    var win2 = new THREE.Mesh(new THREE.BoxGeometry(0.32,0.32,0.06), winMat2);
+    win2.position.set(wx(x)+2.9, 1.9, -0.79);
+    g.add(win2);
+    g.userData.windows = [win1,win2];
+    return g;
+  }
+
+  function makeFlagpole(x,topY){
+    var g = new THREE.Object3D();
+    var poleMat = new THREE.MeshStandardMaterial({color:0xC9C9C9, metalness:0.6, roughness:0.4});
+    var poleH = (GROUND_TOP-topY)*SCALE;
+    var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,poleH,8), poleMat);
+    pole.position.set(wx(x), wyPoint(topY)-poleH/2, 0);
+    g.add(pole);
+    var ball = new THREE.Mesh(new THREE.SphereGeometry(0.08,8,8), new THREE.MeshStandardMaterial({color:0xD6B24A, metalness:0.5, roughness:0.3}));
+    ball.position.set(wx(x), wyPoint(topY), 0);
+    g.add(ball);
+    var flagGroup = new THREE.Object3D();
+    flagGroup.position.set(wx(x), wyPoint(topY)-0.15, 0);
+    var flag = new THREE.Mesh(new THREE.PlaneGeometry(0.5,0.28), new THREE.MeshStandardMaterial({color:0xFFC93C, side:THREE.DoubleSide}));
+    flag.position.x = 0.28;
+    flagGroup.add(flag);
+    g.add(flagGroup);
+    g.userData.flagGroup = flagGroup;
+    return g;
+  }
+
+  function makeSign(x){
+    var g = new THREE.Object3D();
+    var postMat = new THREE.MeshStandardMaterial({color:0x5A3A1E});
+    var post = new THREE.Mesh(new THREE.BoxGeometry(0.16,1.6,0.16), postMat);
+    post.position.set(wx(x), 0.8, 0.6);
+    g.add(post);
+
+    var c = document.createElement('canvas'); c.width=256; c.height=256;
+    var g2 = c.getContext('2d');
+    g2.fillStyle = '#8B5A2B'; g2.fillRect(0,0,256,256);
+    g2.strokeStyle = 'rgba(0,0,0,0.4)'; g2.lineWidth = 8; g2.strokeRect(4,4,248,248);
+    g2.fillStyle = '#FFF8EC';
+    g2.font = "20px 'Nunito', sans-serif";
+    g2.textAlign = 'center';
+    var lines = ['Solo cruza','quien no hiere.','Reune el oro.','Luego, quedate','quieto y observa','el sol parpadear','dos veces.'];
+    lines.forEach(function(line,i){ g2.fillText(line, 128, 46+i*26); });
+    var tex = new THREE.CanvasTexture(c);
+    var woodMat = new THREE.MeshStandardMaterial({color:0x8B5A2B});
+    var plankMat = new THREE.MeshStandardMaterial({map:tex});
+    var plank = new THREE.Mesh(new THREE.BoxGeometry(1.9,1.9,0.12), [woodMat,woodMat,woodMat,woodMat,plankMat,woodMat]);
+    plank.position.set(wx(x), 1.7, 0.66);
+    g.add(plank);
+    return g;
+  }
+
+  function makeBridge(x0,x1){
+    var w = (x1-x0)*SCALE;
+    var mat = new THREE.MeshStandardMaterial({color:0xE8C15A, emissive:0x8a6a1a, emissiveIntensity:0.35});
+    var g = new THREE.Object3D();
+    var slab = new THREE.Mesh(new THREE.BoxGeometry(w,0.5,3), mat);
+    slab.position.set(wx(x0)+w/2, -0.25, 0);
+    g.add(slab);
+    var glow = new THREE.Mesh(new THREE.BoxGeometry(w,0.06,3.1), new THREE.MeshBasicMaterial({color:0xFFF0B0, transparent:true, opacity:0.5}));
+    glow.position.set(wx(x0)+w/2, 0.03, 0);
+    g.add(glow);
+    g.userData.glow = glow;
+    return g;
+  }
+
+  function addBackdrop(danger){
+    var count = Math.max(6, Math.round(LEVEL_W*SCALE/9));
+    var mountainColor = danger ? 0x6B3550 : 0x8FA0D0;
+    var hillColor = danger ? 0x8A4A3A : 0x3FA34D;
+    var cloudColor = danger ? 0x9A7A7A : 0xFFFFFF;
+    for(var i=0;i<count;i++){
+      var px = seeded(i*3.1)*(LEVEL_W*SCALE+20)-10;
+      var mh = 5+seeded(i*7.7)*4;
+      var mtn = new THREE.Mesh(new THREE.ConeGeometry(4+seeded(i*5.3)*2, mh, 4), new THREE.MeshStandardMaterial({color:mountainColor}));
+      mtn.position.set(px, mh/2-0.4, -55-seeded(i*2.2)*20);
+      mtn.rotation.y = seeded(i)*Math.PI;
+      levelGroup.add(mtn);
+
+      var hill = new THREE.Mesh(new THREE.SphereGeometry(3+seeded(i*9.1)*1.5,10,8), new THREE.MeshStandardMaterial({color:hillColor}));
+      hill.scale.set(1,0.5,0.6);
+      hill.position.set(px+seeded(i*4.4)*6, -0.2, -18-seeded(i*6.6)*10);
+      levelGroup.add(hill);
+
+      if(i%2===0){
+        var cg = new THREE.Object3D();
+        var cmat = new THREE.MeshStandardMaterial({color:cloudColor});
+        for(var k=0;k<3;k++){
+          var s = new THREE.Mesh(new THREE.SphereGeometry(0.9+seeded(i*11+k)*0.5,8,6), cmat);
+          s.position.set(k*1.1-1.1, seeded(i*13+k)*0.4, 0);
+          cg.add(s);
+        }
+        cg.position.set(px+seeded(i*8.8)*10, 5+seeded(i*2.9)*2, -30-seeded(i*3.3)*15);
+        levelGroup.add(cg);
+      }
+    }
+  }
+
+  function rebuildLevelMeshes(){
+    if(!scene) return; // guarded: loadLevel() runs once before initThree() on first boot
+    disposeObj(levelGroup);
+    levelGroup = new THREE.Object3D();
+    scene.add(levelGroup);
+
+    var danger = THEME==='danger';
+    scene.background = new THREE.Color(danger ? 0x7A1E1E : 0x3E8ED0);
+    scene.fog = new THREE.Fog(danger ? 0x7A1E1E : 0x3E8ED0, 22, 95);
+
+    var groundColor = danger ? 0x8B3A2E : 0x8B5A2B;
+    var grassColor = danger ? 0x8A2A1E : 0x3FA34D;
+    groundSegs.forEach(function(seg){
+      var w = (seg[1]-seg[0])*SCALE;
+      var slab = new THREE.Mesh(new THREE.BoxGeometry(w,1.4,3), new THREE.MeshStandardMaterial({color:groundColor}));
+      slab.position.set(wx(seg[0])+w/2, -0.7, 0);
+      levelGroup.add(slab);
+      var cap = new THREE.Mesh(new THREE.BoxGeometry(w,0.14,3.02), new THREE.MeshStandardMaterial({color:grassColor}));
+      cap.position.set(wx(seg[0])+w/2, 0.07, 0);
+      levelGroup.add(cap);
+    });
+
+    var brickMat = new THREE.MeshStandardMaterial({color:0xC77B3D});
+    platforms.forEach(function(p){
+      var w=p.w*SCALE, h=p.h*SCALE;
+      var m = new THREE.Mesh(new THREE.BoxGeometry(w,h,1.7), brickMat);
+      m.position.set(wx(p.x)+w/2, wyTop(p.y,p.h), 0);
+      levelGroup.add(m);
+    });
+
+    var pipeMat = new THREE.MeshStandardMaterial({color:0x2E8B57});
+    var rimMat = new THREE.MeshStandardMaterial({color:0x1F5F3B});
+    pipes.forEach(function(p){
+      var r=p.w*SCALE/2, h=p.h*SCALE;
+      var m = new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,14), pipeMat);
+      m.position.set(wx(p.x)+r, wyTop(p.y,p.h), 0);
+      levelGroup.add(m);
+      var rim = new THREE.Mesh(new THREE.CylinderGeometry(r*1.15,r*1.15,0.14,14), rimMat);
+      rim.position.set(wx(p.x)+r, wyTop(p.y,p.h)+h/2-0.03, 0);
+      levelGroup.add(rim);
+    });
+
+    var castleGroup = makeCastle(CASTLE_X);
+    levelGroup.add(castleGroup);
+    castleRef = castleGroup;
+
+    var flagpoleGroup = makeFlagpole(FLAG_X, FLAG_TOP);
+    levelGroup.add(flagpoleGroup);
+    flagRef = flagpoleGroup.userData.flagGroup;
+
+    bridgeMesh = null;
+    bridgePopT = 0;
+    if(danger){
+      levelGroup.add(makeSign(112));
+      bridgeMesh = makeBridge(GAP_LO,GAP_HI);
+      bridgeMesh.visible = false;
+      bridgeMesh.scale.set(1,0.001,1);
+      levelGroup.add(bridgeMesh);
+    }
+
+    addBackdrop(danger);
+  }
+
+  function rebuildEntityMeshes(){
+    if(!scene) return;
+    coinMeshes.forEach(disposeObj);
+    coinMeshes = coins.map(function(){ var m = makeCoinMesh(); scene.add(m); return m; });
+    enemyMeshes.forEach(disposeObj);
+    enemyMeshes = enemies.map(function(){ var m = makeWobble(); scene.add(m); return m; });
+  }
+
+  function getParticleMesh(type, idx){
+    var pool = particlePools[type];
+    while(pool.length<=idx){
+      var m = new THREE.Mesh(particleGeos[type], new THREE.MeshBasicMaterial({transparent:true}));
+      m.visible = false;
+      scene.add(m);
+      pool.push(m);
+    }
+    return pool[idx];
+  }
+  function syncParticles(){
+    var counts = {dust:0,poof:0,sparkle:0,confetti:0};
+    particles.forEach(function(p){
+      var idx = counts[p.type]++;
+      var m = getParticleMesh(p.type, idx);
+      var t = p.life/p.max;
+      m.visible = true;
+      m.position.set(wx(p.x), wyPoint(p.y), 0.3);
+      var sc = (p.size/9) * (1-(p.type==='confetti'?0:t*0.3));
+      m.scale.setScalar(Math.max(0.15, sc));
+      m.material.color.set(p.color);
+      m.material.opacity = Math.max(0, 1-t);
+      if(p.type==='confetti') m.rotation.z = p.rot;
+      if(p.type==='sparkle') m.rotation.y += 0.25;
+    });
+    Object.keys(particlePools).forEach(function(type){
+      var pool = particlePools[type];
+      for(var i=counts[type]; i<pool.length; i++){ pool[i].visible = false; }
+    });
+  }
+
+  function syncScene(dt){
+    var stretch = !player.grounded ? Math.max(-0.18,Math.min(0.28,player.vy/22)) : 0;
     var squash = squashT>0 ? (squashT/160)*0.22 : 0;
     var sx = 1 + squash - Math.max(0,stretch)*0.3;
     var sy = 1 - squash + stretch*0.5;
 
-    ctx.save();
-    ctx.translate(x+w/2, y+h);
-    if(spinT>0){ ctx.rotate((1-spinT/260) * Math.PI*2 * (dir>0?1:-1)); }
-    ctx.scale(dir*sx, sy);
-    ctx.translate(-w/2,-h);
+    playerRig.visible = (invuln<=0 || Math.floor(animT/100)%2===0);
+    playerRig.position.set(wx(player.x+PLAYER_W/2), wyPoint(player.y+PLAYER_H), 0);
+    playerRig.scale.set(facing*sx, sy, 1);
+    playerRig.rotation.z = doubleJumpT>0 ? (1-doubleJumpT/260)*Math.PI*2*(facing>0?1:-1) : 0;
 
-    ctx.fillStyle = 'rgba(20,20,10,0.22)';
-    ctx.beginPath(); ctx.ellipse(w/2,h+3,w*0.5,4,0,0,Math.PI*2); ctx.fill();
-
+    var running = Math.abs(player.vx)>0.3;
+    var jumping = !player.grounded;
     var swing = jumping ? 0.5 : (running ? Math.sin(animT/55) : 0);
-
-    // back leg
-    ctx.save();
-    ctx.translate(w*0.32,h*0.82);
-    ctx.rotate(swing*0.5);
-    ctx.fillStyle = '#154F4F';
-    ctx.fillRect(-4,0,9,h*0.18);
-    ctx.fillStyle = '#2E2A26';
-    ctx.fillRect(-5,h*0.16,11,5);
-    ctx.restore();
-
-    // front leg
-    ctx.save();
-    ctx.translate(w*0.68,h*0.82);
-    ctx.rotate(-swing*0.5);
-    ctx.fillStyle = '#1D6B6B';
-    ctx.fillRect(-5,0,9,h*0.18);
-    ctx.fillStyle = '#2E2A26';
-    ctx.fillRect(-6,h*0.16,11,5);
-    ctx.restore();
-
-    // overalls body (with gradient volume)
-    var bodyG = ctx.createLinearGradient(0,h*0.4,w,h*0.4);
-    bodyG.addColorStop(0,'#0F4747');
-    bodyG.addColorStop(0.5,'#1D6B6B');
-    bodyG.addColorStop(1,'#134F4F');
-    ctx.fillStyle = bodyG;
-    roundRect(2, h*0.42, w-4, h*0.4, 4);
-    ctx.fillStyle = '#F2C29B';
-    ctx.fillRect(w*0.36,h*0.46,4,4);
-    ctx.fillRect(w*0.6,h*0.46,4,4);
-
-    // back arm
+    legL.rotation.z = swing*0.5;
+    legR.rotation.z = -swing*0.5;
     var armSwing = jumping ? -0.6 : (running ? -swing*0.6 : 0);
-    ctx.save();
-    ctx.translate(w*0.18,h*0.5);
-    ctx.rotate(armSwing);
-    ctx.fillStyle = '#C74A22';
-    ctx.fillRect(-4,0,7,h*0.26);
-    ctx.fillStyle = '#F2C29B';
-    ctx.beginPath(); ctx.arc(-0.5,h*0.26,4,0,Math.PI*2); ctx.fill();
-    ctx.restore();
+    armL.rotation.z = armSwing;
+    armR.rotation.z = -armSwing;
 
-    // shirt/torso
-    var shirtG = ctx.createLinearGradient(0,h*0.26,0,h*0.5);
-    shirtG.addColorStop(0,'#F0764A');
-    shirtG.addColorStop(1,'#C74A22');
-    ctx.fillStyle = shirtG;
-    roundRect(0, h*0.27, w, h*0.2, 3);
+    coins.forEach(function(c,i){
+      var m = coinMeshes[i];
+      if(!m) return;
+      m.visible = !c.taken;
+      if(c.taken) return;
+      var bob = Math.sin((animT/180)+c.x)*0.09;
+      m.position.set(wx(c.x+c.w/2), wyPoint(c.y+c.h/2)+bob, 0);
+      m.rotation.y = animT/220 + c.x;
+    });
 
-    // front arm
-    ctx.save();
-    ctx.translate(w*0.82,h*0.5);
-    ctx.rotate(-armSwing);
-    ctx.fillStyle = '#E4572E';
-    ctx.fillRect(-3,0,7,h*0.26);
-    ctx.fillStyle = '#F2C29B';
-    ctx.beginPath(); ctx.arc(0.5,h*0.26,4,0,Math.PI*2); ctx.fill();
-    ctx.restore();
+    enemies.forEach(function(e,i){
+      var m = enemyMeshes[i];
+      if(!m) return;
+      if(e.alive){
+        m.visible = true;
+        m.scale.set(1,1,1);
+        var bob = Math.sin(animT/110+e.x)*0.04;
+        m.position.set(wx(e.x+e.w/2), wyPoint(e.y+e.h)+bob, 0);
+        m.rotation.y = e.dir>0 ? Math.PI/2 : -Math.PI/2;
+      } else if(e.squish>0){
+        m.visible = true;
+        var k = e.squish/220;
+        m.position.set(wx(e.x+e.w/2), wyPoint(e.y+e.h), 0);
+        m.scale.set(1+(1-k)*0.5, Math.max(0.05,k*0.5), 1+(1-k)*0.5);
+      } else {
+        m.visible = false;
+      }
+    });
 
-    // head with subtle shading
-    var headG = ctx.createRadialGradient(w*0.35,h*0.14,2,w*0.5,h*0.18,w*0.5);
-    headG.addColorStop(0,'#FBDAB8');
-    headG.addColorStop(1,'#E8AE7C');
-    ctx.fillStyle = headG;
-    roundRect(4, h*0.06, w-8, h*0.26, 4);
+    if(bridgeMesh){
+      if(bridgeUnlocked){
+        bridgeMesh.visible = true;
+        bridgePopT = Math.min(400, bridgePopT+dt);
+        var kk = bridgePopT/400;
+        bridgeMesh.scale.set(1, Math.max(0.001,kk), 1);
+        bridgeMesh.userData.glow.material.opacity = 0.35+0.25*Math.sin(animT/260);
+      } else {
+        bridgeMesh.visible = false;
+      }
+    }
 
-    // cap
-    var capG = ctx.createLinearGradient(0,0,0,h*0.12);
-    capG.addColorStop(0,'#F0764A');
-    capG.addColorStop(1,'#C74A22');
-    ctx.fillStyle = capG;
-    roundRect(2, -1, w-4, h*0.13, 3);
-    ctx.fillRect(dir>0? w-9 : 0, h*0.09, 12, 6);
+    if(flagRef) flagRef.rotation.z = Math.sin(animT/220)*0.18;
+    if(castleRef){
+      var glow = 0.4+0.3*((Math.sin(animT/500)+1)/2);
+      castleRef.userData.windows.forEach(function(w){ w.material.emissiveIntensity = glow; });
+    }
 
-    // mustache & face
-    ctx.fillStyle = '#3B2417';
-    ctx.fillRect(w*0.42, h*0.21, w*0.42, 4.5);
-    var blink = (Math.floor(animT/2200)%5===0 && (animT%2200)<120);
-    ctx.fillStyle = '#1C1C1E';
-    if(blink){ ctx.fillRect(w*0.6,h*0.145,4,1.4); }
-    else { ctx.fillRect(w*0.62,h*0.12,3,4.5); }
+    if(THEME==='danger' && !bridgeUnlocked && stillTimer>60){
+      for(var i=0;i<2;i++){
+        riddleDots[i].visible = true;
+        riddleDots[i].position.set(wx(player.x+PLAYER_W/2)+(i-0.5)*0.35, wyPoint(player.y)+0.4, 0.4);
+        riddleDots[i].material.color.set(i<blinksWhileStill ? 0xFFC93C : 0xFFFFFF);
+        riddleDots[i].material.opacity = i<blinksWhileStill ? 1 : 0.4;
+      }
+    } else {
+      riddleDots[0].visible = false; riddleDots[1].visible = false;
+    }
 
-    ctx.restore();
-  }
-  function roundRect(x,y,w,h,r){
-    ctx.beginPath();
-    ctx.moveTo(x+r,y);
-    ctx.arcTo(x+w,y,x+w,y+h,r);
-    ctx.arcTo(x+w,y+h,x,y+h,r);
-    ctx.arcTo(x,y+h,x,y,r);
-    ctx.arcTo(x,y,x+w,y,r);
-    ctx.closePath();
-    ctx.fill();
+    syncParticles();
+
+    // third-person follow camera
+    var camTargetX = wx(player.x+PLAYER_W/2);
+    var camTargetY = wyPoint(player.y+PLAYER_H/2);
+    var behind = -facing*3.0;
+    var desiredX = camTargetX + behind;
+    var desiredY = camTargetY + 1.9;
+    camState.x += (desiredX-camState.x)*0.09;
+    camState.y += (desiredY-camState.y)*0.09;
+    var shx=0, shy=0;
+    if(shakeTime>0){
+      shx = (seeded(animT*0.7)-0.5)*2*shakeMag*SCALE*3;
+      shy = (seeded(animT*0.7+9)-0.5)*2*shakeMag*SCALE*3;
+    }
+    tcamera.position.set(camState.x+shx, camState.y+shy, 6.4);
+    tcamera.lookAt(camTargetX+facing*1.6, camTargetY+0.2, 0);
   }
 
   // ---------- input ----------
@@ -1289,7 +1259,7 @@
   function backToMenu(){
     state = 'start';
     var tag = document.getElementById('tagline');
-    if(tag) tag.textContent = 'an original pipes-&-coins platformer';
+    if(tag) tag.textContent = 'an original pipes-&-coins platformer — now in 3D';
     show('startOverlay');
   }
   Array.prototype.forEach.call(document.querySelectorAll('.lvl'), function(btn){
@@ -1310,13 +1280,16 @@
     var dt = Math.min(40, ts-last);
     last = ts;
     update(dt);
-    draw();
+    syncScene(dt);
+    renderer.render(scene, tcamera);
     requestAnimationFrame(frame);
   }
 
+  initThree();
   resetRun();
   updateHud();
-  draw();
+  syncScene(0);
+  renderer.render(scene, tcamera);
   requestAnimationFrame(frame);
 
   // ---------- hot reload state (published-page updates) ----------
