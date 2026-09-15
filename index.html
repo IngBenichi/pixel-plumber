@@ -711,7 +711,7 @@
   var playerRig, legL, legR, armL, armR;
   var enemyMeshes = [], coinMeshes = [];
   var riddleDots = [];
-  var camState = {x:0,y:1.6,z:6.4};
+  var camState = {x:0,y:1.6};
   var particlePools = { dust:[], poof:[], sparkle:[], confetti:[] };
   var particleGeos = {};
 
@@ -1133,19 +1133,25 @@
     var sx = 1 + squash - Math.max(0,stretch)*0.3;
     var sy = 1 - squash + stretch*0.5;
 
+    // face the direction of travel on the map (world +X/-X), not the camera —
+    // rotating the rig means the leg/arm swing (built for a Z-forward model)
+    // has to swing about local X instead of Z to still land in the map's
+    // forward/up plane; see the -facing factor below.
     playerRig.visible = (invuln<=0 || Math.floor(animT/100)%2===0);
     playerRig.position.set(wx(player.x+PLAYER_W/2), wyPoint(player.y+PLAYER_H), 0);
-    playerRig.scale.set(facing*sx, sy, 1);
+    playerRig.rotation.y = facing>0 ? Math.PI/2 : -Math.PI/2;
+    playerRig.scale.set(sx, sy, sx);
     playerRig.rotation.z = doubleJumpT>0 ? (1-doubleJumpT/260)*Math.PI*2*(facing>0?1:-1) : 0;
 
     var running = Math.abs(player.vx)>0.3;
     var jumping = !player.grounded;
     var swing = jumping ? 0.5 : (running ? Math.sin(animT/55) : 0);
-    legL.rotation.z = swing*0.5;
-    legR.rotation.z = -swing*0.5;
+    legL.rotation.z = 0; legR.rotation.z = 0; armL.rotation.z = 0; armR.rotation.z = 0;
+    legL.rotation.x = -facing*swing*0.5;
+    legR.rotation.x = facing*swing*0.5;
     var armSwing = jumping ? -0.6 : (running ? -swing*0.6 : 0);
-    armL.rotation.z = armSwing;
-    armR.rotation.z = -armSwing;
+    armL.rotation.x = -facing*armSwing;
+    armR.rotation.x = facing*armSwing;
 
     coins.forEach(function(c,i){
       var m = coinMeshes[i];
@@ -1207,12 +1213,15 @@
 
     syncParticles();
 
-    // third-person follow camera
+    // third-person follow camera — trails mostly BEHIND the player along the
+    // map's travel axis (matching the way the rig now actually turns to face
+    // it), with just a little Z offset for a three-quarter angle instead of
+    // a flat side view.
     var camTargetX = wx(player.x+PLAYER_W/2);
     var camTargetY = wyPoint(player.y+PLAYER_H/2);
-    var behind = -facing*3.0;
+    var behind = -facing*4.4;
     var desiredX = camTargetX + behind;
-    var desiredY = camTargetY + 1.9;
+    var desiredY = camTargetY + 1.7;
     camState.x += (desiredX-camState.x)*0.09;
     camState.y += (desiredY-camState.y)*0.09;
     var shx=0, shy=0;
@@ -1220,8 +1229,8 @@
       shx = (seeded(animT*0.7)-0.5)*2*shakeMag*SCALE*3;
       shy = (seeded(animT*0.7+9)-0.5)*2*shakeMag*SCALE*3;
     }
-    tcamera.position.set(camState.x+shx, camState.y+shy, 6.4);
-    tcamera.lookAt(camTargetX+facing*1.6, camTargetY+0.2, 0);
+    tcamera.position.set(camState.x+shx, camState.y+shy, 3.0);
+    tcamera.lookAt(camTargetX+facing*1.8, camTargetY+0.2, 0);
   }
 
   // ---------- input ----------
