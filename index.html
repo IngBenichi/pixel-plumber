@@ -120,6 +120,27 @@
   }
   button.play:active{border-bottom-width:2px; transform:translateY(2px);}
   button.play:focus-visible{outline:3px solid #fff; outline-offset:2px;}
+  .level-grid{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:12px;
+  }
+  .lvl-sub{
+    display:block;
+    font-family:'Nunito',sans-serif;
+    font-size:9.5px;
+    font-weight:700;
+    letter-spacing:0.2px;
+    margin-top:6px;
+    opacity:0.9;
+    text-transform:none;
+  }
+  .lvl-impossible{
+    background:#E4572E;
+    border-bottom-color:#8B2A12;
+    color:#FFF8EC;
+  }
   .hud{
     position:absolute;
     top:0; left:0; right:0;
@@ -182,7 +203,7 @@
 <div class="cab">
   <div class="title-row">
     <h1>PIXEL PLUMBER</h1>
-    <span class="tagline">an original pipes-&amp;-coins platformer</span>
+    <span class="tagline" id="tagline">an original pipes-&amp;-coins platformer</span>
   </div>
 
   <div class="stage" id="stage">
@@ -197,21 +218,31 @@
 
     <div class="overlay" id="startOverlay">
       <h2>PIXEL PLUMBER</h2>
-      <p>Run, jump on Wobbles, grab every coin and reach the flag before time runs out. Watch out for pits!</p>
+      <p>Pick a level. Grab every coin, stomp the Wobbles, reach the flag before time runs out.</p>
       <p class="hint">Arrows / A-D to move &middot; Space or Up to jump &mdash; tap again in mid-air for a double jump &middot; or use the on-screen pad</p>
-      <button class="play" id="btnStart">PRESS START</button>
+      <div class="level-grid">
+        <button class="play lvl" data-level="0">EASY<span class="lvl-sub">wide paths, generous coins</span></button>
+        <button class="play lvl" data-level="1">MEDIUM<span class="lvl-sub">pits, pipes &amp; patrols</span></button>
+        <button class="play lvl lvl-impossible" data-level="2">IMPOSSIBLE<span class="lvl-sub">nobody has ever finished this</span></button>
+      </div>
     </div>
 
     <div class="overlay" id="clearOverlay" hidden>
       <h2>LEVEL CLEAR!</h2>
       <p id="clearStats"></p>
-      <button class="play" id="btnAgainClear">PLAY AGAIN</button>
+      <div class="level-grid">
+        <button class="play" id="btnAgainClear">PLAY AGAIN</button>
+        <button class="play" id="btnMenuClear">LEVEL SELECT</button>
+      </div>
     </div>
 
     <div class="overlay" id="overOverlay" hidden>
       <h2>GAME OVER</h2>
       <p id="overStats"></p>
-      <button class="play" id="btnAgainOver">TRY AGAIN</button>
+      <div class="level-grid">
+        <button class="play" id="btnAgainOver">TRY AGAIN</button>
+        <button class="play" id="btnMenuOver">LEVEL SELECT</button>
+      </div>
     </div>
   </div>
 
@@ -261,54 +292,112 @@
   function sfxOver(){ [392,330,294,220].forEach(function(f,i){ beep(f,0.22,'sawtooth',0.15,i*0.16); }); }
 
   // ---------- level ----------
-  var LEVEL_W = 90 * TILE; // 2880
   var GROUND_TOP = 416;
 
-  var groundSegs = [[0,640],[704,1408],[1504,2112],[2176,2880]];
-  var platforms = [
-    {x:320,y:320,w:96,h:32},
-    {x:832,y:288,w:128,h:32},
-    {x:1184,y:352,w:64,h:32},
-    {x:1600,y:256,w:96,h:32},
-    {x:1856,y:320,w:64,h:32},
-    {x:2304,y:288,w:128,h:32}
-  ];
-  var pipes = [
-    {x:448,y:352,w:64,h:64},
-    {x:960,y:320,w:64,h:96},
-    {x:1696,y:352,w:64,h:64},
-    {x:2432,y:288,w:64,h:128}
+  // The IMPOSSIBLE level's pit is 928px wide. The best possible jump this engine
+  // allows (dead run + perfectly-timed double jump) covers ~297px — see the
+  // physics constants below. The gap is roughly 3x that, so no sequence of
+  // inputs can cross it: it is not "very hard", it is provably uncrossable.
+  var LEVELS = [
+    {
+      id:'easy', name:'EASY',
+      levelW: 1536,
+      groundSegs: [[0,704],[736,1536]],
+      platforms: [{x:300,y:352,w:96,h:32},{x:900,y:352,w:96,h:32}],
+      pipes: [{x:500,y:384,w:64,h:32}],
+      coinDefs: [
+        [120,370],[152,370],[184,370],
+        [320,300],[352,300],[384,300],
+        [560,370],[592,370],
+        [760,370],[792,370],
+        [920,300],[952,300],[984,300],
+        [1100,370],[1132,370],
+        [1300,370],[1332,370]
+      ],
+      enemyDefs: [{x:420,minX:380,maxX:520},{x:1000,minX:960,maxX:1120}],
+      flagX:1400, flagTop:256, castleX:1472,
+      timeLimit:240, theme:'day'
+    },
+    {
+      id:'medium', name:'MEDIUM',
+      levelW: 2880,
+      groundSegs: [[0,640],[704,1408],[1504,2112],[2176,2880]],
+      platforms: [
+        {x:320,y:320,w:96,h:32},
+        {x:832,y:288,w:128,h:32},
+        {x:1184,y:352,w:64,h:32},
+        {x:1600,y:256,w:96,h:32},
+        {x:1856,y:320,w:64,h:32},
+        {x:2304,y:288,w:128,h:32}
+      ],
+      pipes: [
+        {x:448,y:352,w:64,h:64},
+        {x:960,y:320,w:64,h:96},
+        {x:1696,y:352,w:64,h:64},
+        {x:2432,y:288,w:64,h:128}
+      ],
+      coinDefs: [
+        [350,270],[382,270],[414,270],
+        [650,380],[680,380],
+        [860,240],[892,240],[924,240],[956,240],
+        [1200,300],
+        [1420,380],[1450,380],[1480,380],
+        [1620,210],[1652,210],[1684,210],
+        [1870,270],
+        [2130,380],[2160,380],
+        [2330,240],[2362,240],[2394,240],[2426,240],
+        [2550,380]
+      ],
+      enemyDefs: [
+        {x:500,minX:250,maxX:600},
+        {x:800,minX:750,maxX:1050},
+        {x:1200,minX:1150,maxX:1380},
+        {x:1600,minX:1550,maxX:1850},
+        {x:1950,minX:1900,maxX:2080},
+        {x:2300,minX:2200,maxX:2450}
+      ],
+      flagX:2688, flagTop:256, castleX:2760,
+      timeLimit:200, theme:'day'
+    },
+    {
+      id:'impossible', name:'IMPOSSIBLE',
+      levelW: 1920,
+      groundSegs: [[0,288],[1216,1920]],
+      platforms: [{x:1216,y:128,w:128,h:288}],
+      pipes: [],
+      coinDefs: [[100,380],[132,380],[164,380]],
+      enemyDefs: [{x:200,minX:150,maxX:250}],
+      flagX:1700, flagTop:256, castleX:1772,
+      timeLimit:60, theme:'danger'
+    }
   ];
 
-  var solids = [];
-  groundSegs.forEach(function(g){ solids.push({x:g[0],y:GROUND_TOP,w:g[1]-g[0],h:64,type:'ground'}); });
-  platforms.forEach(function(p){ solids.push({x:p.x,y:p.y,w:p.w,h:p.h,type:'brick'}); });
-  pipes.forEach(function(p){ solids.push({x:p.x,y:p.y,w:p.w,h:p.h,type:'pipe'}); });
+  var LEVEL_W, groundSegs, platforms, pipes, coinDefs, enemyDefs, FLAG_X, FLAG_TOP, CASTLE_X, TIME_LIMIT, THEME, solids;
+  var levelIndex = 0;
 
-  var coinDefs = [
-    [350,270],[382,270],[414,270],
-    [650,380],[680,380],
-    [860,240],[892,240],[924,240],[956,240],
-    [1200,300],
-    [1420,380],[1450,380],[1480,380],
-    [1620,210],[1652,210],[1684,210],
-    [1870,270],
-    [2130,380],[2160,380],
-    [2330,240],[2362,240],[2394,240],[2426,240],
-    [2550,380]
-  ];
+  function loadLevel(idx){
+    levelIndex = idx;
+    var L = LEVELS[idx];
+    LEVEL_W = L.levelW;
+    groundSegs = L.groundSegs;
+    platforms = L.platforms;
+    pipes = L.pipes;
+    coinDefs = L.coinDefs;
+    enemyDefs = L.enemyDefs;
+    FLAG_X = L.flagX;
+    FLAG_TOP = L.flagTop;
+    CASTLE_X = L.castleX;
+    TIME_LIMIT = L.timeLimit;
+    THEME = L.theme;
 
-  var enemyDefs = [
-    {x:500,minX:250,maxX:600},
-    {x:800,minX:750,maxX:1050},
-    {x:1200,minX:1150,maxX:1380},
-    {x:1600,minX:1550,maxX:1850},
-    {x:1950,minX:1900,maxX:2080},
-    {x:2300,minX:2200,maxX:2450}
-  ];
+    solids = [];
+    groundSegs.forEach(function(g){ solids.push({x:g[0],y:GROUND_TOP,w:g[1]-g[0],h:64,type:'ground'}); });
+    platforms.forEach(function(p){ solids.push({x:p.x,y:p.y,w:p.w,h:p.h,type:'brick'}); });
+    pipes.forEach(function(p){ solids.push({x:p.x,y:p.y,w:p.w,h:p.h,type:'pipe'}); });
 
-  var FLAG_X = 2688;
-  var FLAG_TOP = 256;
+    var tag = document.getElementById('tagline');
+    if(tag) tag.textContent = 'Level: ' + L.name;
+  }
 
   // ---------- entities ----------
   var PLAYER_W = 26, PLAYER_H = 40;
@@ -322,7 +411,8 @@
   var AIR_JUMP_V = JUMP_V * 0.86;
 
   function resetRun(){
-    score = 0; coinCount = 0; lives = 3; timeLeft = 200; timeAcc = 0;
+    score = 0; coinCount = 0; lives = 3; timeAcc = 0;
+    loadLevel(levelIndex);
     resetLevel();
   }
   function resetLevel(){
@@ -331,7 +421,7 @@
     coins = coinDefs.map(function(c){ return {x:c[0],y:c[1],w:18,h:18,taken:false}; });
     enemies = enemyDefs.map(function(e){ return {x:e.x,y:GROUND_TOP-28,w:28,h:28,minX:e.minX,maxX:e.maxX,dir:1,alive:true,squish:0}; });
     invuln = 0; facing = 1; animT = 0; poleSlide = 0;
-    timeLeft = 200;
+    timeLeft = TIME_LIMIT;
     particles = []; shakeTime = 0; shakeMag = 0; prevGrounded = false; runDustTimer = 0; squashT = 0;
     jumpsUsed = 0; wantJumpPrev = false; doubleJumpT = 0;
   }
@@ -586,9 +676,15 @@
 
     // sky
     var sky = ctx.createLinearGradient(0,0,0,h);
-    sky.addColorStop(0,'#3E8ED0');
-    sky.addColorStop(0.55,'#7EC8F5');
-    sky.addColorStop(1,'#E9F7FF');
+    if(THEME==='danger'){
+      sky.addColorStop(0,'#7A1E1E');
+      sky.addColorStop(0.55,'#B0413A');
+      sky.addColorStop(1,'#F2C6B4');
+    } else {
+      sky.addColorStop(0,'#3E8ED0');
+      sky.addColorStop(0.55,'#7EC8F5');
+      sky.addColorStop(1,'#E9F7FF');
+    }
     ctx.fillStyle = sky;
     ctx.fillRect(0,0,w,h);
 
@@ -633,7 +729,7 @@
     ctx.translate(-camX,0);
 
     // castle backdrop near the flag
-    drawCastle(2760, GROUND_TOP);
+    drawCastle(CASTLE_X, GROUND_TOP);
 
     // ground
     groundSegs.forEach(function(seg){ drawGround(seg[0],seg[1]); });
@@ -710,8 +806,8 @@
 
   function mountain(x,y,size,ht){
     var grad = ctx.createLinearGradient(x,y-ht,x,y);
-    grad.addColorStop(0,'#B7C4E8');
-    grad.addColorStop(1,'#8FA0D0');
+    if(THEME==='danger'){ grad.addColorStop(0,'#6B3550'); grad.addColorStop(1,'#432038'); }
+    else { grad.addColorStop(0,'#B7C4E8'); grad.addColorStop(1,'#8FA0D0'); }
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.moveTo(x-size*0.55,y);
@@ -730,14 +826,14 @@
     ctx.fill();
   }
   function cloud(x,y){
-    ctx.fillStyle = 'rgba(160,190,215,0.35)';
+    ctx.fillStyle = THEME==='danger' ? 'rgba(90,50,60,0.35)' : 'rgba(160,190,215,0.35)';
     ctx.beginPath();
     ctx.ellipse(x+3,y+6,26,15,0,0,Math.PI*2);
     ctx.ellipse(x+27,y+9,20,12,0,0,Math.PI*2);
     ctx.fill();
     var g = ctx.createLinearGradient(x,y-16,x,y+16);
-    g.addColorStop(0,'#FFFFFF');
-    g.addColorStop(1,'#DCEEFB');
+    if(THEME==='danger'){ g.addColorStop(0,'#D8BDBD'); g.addColorStop(1,'#9A7A7A'); }
+    else { g.addColorStop(0,'#FFFFFF'); g.addColorStop(1,'#DCEEFB'); }
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.ellipse(x,y,26,16,0,0,Math.PI*2);
@@ -747,8 +843,8 @@
   }
   function hill(x,y,size){
     var g = ctx.createLinearGradient(x,y-size*0.55,x,y);
-    g.addColorStop(0,'#5FBE6B');
-    g.addColorStop(1,'#3B8A49');
+    if(THEME==='danger'){ g.addColorStop(0,'#8A4A3A'); g.addColorStop(1,'#5A2A1E'); }
+    else { g.addColorStop(0,'#5FBE6B'); g.addColorStop(1,'#3B8A49'); }
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.moveTo(x-size*0.6,y);
@@ -762,7 +858,7 @@
     ctx.quadraticCurveTo(x-size*0.2,y-size*0.28, x-size*0.55,y-4);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = 'rgba(30,70,30,0.35)';
+    ctx.fillStyle = THEME==='danger' ? 'rgba(70,25,20,0.35)' : 'rgba(30,70,30,0.35)';
     for(var k=0;k<6;k++){
       var tx = x - size*0.4 + k*size*0.15 + Math.sin(k*13)*6;
       var ty = y - 3 - Math.abs(Math.sin((tx-x)/size*Math.PI))*size*0.18;
@@ -787,11 +883,11 @@
       }
     }
     var grass = ctx.createLinearGradient(0,GROUND_TOP-2,0,GROUND_TOP+12);
-    grass.addColorStop(0,'#6FD17C');
-    grass.addColorStop(1,'#3B8A49');
+    if(THEME==='danger'){ grass.addColorStop(0,'#B23A2E'); grass.addColorStop(1,'#5A1E14'); }
+    else { grass.addColorStop(0,'#6FD17C'); grass.addColorStop(1,'#3B8A49'); }
     ctx.fillStyle = grass;
     ctx.fillRect(x0, GROUND_TOP, x1-x0, 10);
-    ctx.fillStyle = '#2F6E3B';
+    ctx.fillStyle = THEME==='danger' ? '#3A140E' : '#2F6E3B';
     for(var tx=x0; tx<x1; tx+=14){
       var th = 4+seeded(tx)*5;
       ctx.fillRect(tx, GROUND_TOP-th+4, 3, th);
@@ -1101,9 +1197,22 @@
     updateHud();
     ac();
   }
-  document.getElementById('btnStart').addEventListener('click', startGame);
+  function backToMenu(){
+    state = 'start';
+    var tag = document.getElementById('tagline');
+    if(tag) tag.textContent = 'an original pipes-&-coins platformer';
+    show('startOverlay');
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.lvl'), function(btn){
+    btn.addEventListener('click', function(){
+      levelIndex = parseInt(btn.getAttribute('data-level'), 10);
+      startGame();
+    });
+  });
   document.getElementById('btnAgainClear').addEventListener('click', startGame);
   document.getElementById('btnAgainOver').addEventListener('click', startGame);
+  document.getElementById('btnMenuClear').addEventListener('click', backToMenu);
+  document.getElementById('btnMenuOver').addEventListener('click', backToMenu);
 
   // ---------- loop ----------
   var last = null;
